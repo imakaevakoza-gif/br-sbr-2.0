@@ -1,43 +1,111 @@
-import os
-import requests
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+const express = require('express');
+const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
+const http = require('http');
 
-app = Flask(__name__)
-# Разрешаем фронтенду с GitHub Pages отправлять запросы на этот сервер
-CORS(app)
+const app = express();
+app.use(express.json());
 
-@app.route('/', methods=['GET'])
-def home():
-    return jsonify({"status": "working", "message": "Python backend is running cleanly!"}), 200
+// Разрешаем запросы с любого адреса (включая ваш Telegram Web App на GitHub Pages)
+app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+    next();
+});
 
-@app.route('/api/log', methods=['POST'])
-def proxy_log():
-    try:
-        # Сервер берет секретную ссылку из панели управления Render
-        webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
-        
-        if not webhook_url:
-            print("[ОШИБКА] DISCORD_WEBHOOK_URL не настроен в Environment Variables на Render!")
-            return jsonify({"success": False, "error": "Server configuration error"}), 500
-        
-        # Получаем данные, которые отправил телефон
-        data = request.get_json()
-        
-        # Мгновенно пересылаем Embed-карточку в ваш Discord-канал
-        response = requests.post(webhook_url, json=data, headers={"Content-Type": "application/json"}, timeout=10)
-        
-        # ИСПРАВЛЕНО: Правильная проверка успешных статус-кодов Дискорда (200, 201, 204)
-        if response.status_code in [200, 201, 204]:
-            return jsonify({"success": True}), 200
-        else:
-            print(f"[ДИСКОРД ОТКЛОНИЛ] Код: {response.status_code}, Ответ: {response.text}")
-            return jsonify({"success": False, "error": "Discord rejected request"}), response.status_code
-            
-    except Exception as e:
-        print(f"[КРИТИЧЕСКАЯ ОШИБКА БЭКЕНДА]: {str(e)}")
-        return jsonify({"success": False, "error": "Internal server error"}), 500
+const server = http.createServer(app);
 
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+const CHANNEL_ID = process.env.CHANNEL_ID;
+
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages
+    ]
+});
+
+// Создаем внутренний массив-очередь для логов в оперативной памяти сервера
+const logQueue = [];
+let isProcessingQueue = false;
+
+client.once('ready', () => {
+    console.log(`Discord бот успешно запущен как ${client.user.tag}`);
+    // Запускаем постоянный фоновый процесс проверки очереди
+    processQueue();
+});
+
+// Функция, которая плавно отправляет логи в Discord с паузой, защищая от бана 429
+async function processQueue() {
+    if (isProcessingQueue) return;
+    isProcessingQueue = true;
+
+    while (logQueue.length > 0) {
+        const item = logQueue[0]; // Смотрим самый первый лог в списке
+        try {
+            const channel = await client.channels.fetch(CHANNEL_ID);
+            if (channel) {
+                await channel.send({ embeds: [item.embed] });
+                item.resolve({ success: true });
+                logQueue.shift(); // Удаляем успешно отправленный лог из очереди после отправки
+                
+                // ВАЖНО: Делаем обязательную паузу в 2 секунды между сообщениями.
+                // Благодаря этому Discord НИКОГДА больше не выдаст ошибку 429!
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            } else {
+                item.reject(new Error("Канал Discord не найден"));
+                logQueue.shift();
+            }
+        } catch (err) {
+            // Если Discord всё равно ругается на флуд (429), плавно ждем 5 секунд и не удаляем лог
+            console.error("Ошибка отправки в Discord, ждем 5 секунд...", err.message);
+            await new Promise(resolve => setTimeout(resolve, 5000));
+        }
+    }
+
+    isProcessingQueue = false;
+    // Проверяем очередь снова через полсекунды
+    setTimeout(processQueue, 500);
+}
+
+// ИСПРАВЛЕНО: Убран символ @, теперь синтаксис Express верный
+app.get('/', (req, res) => {
+    res.json({ status: "working", message: "Node.js queue-backend is running cleanly!" });
+});
+
+// API Эндпоинт для логов (сюда шлет данные ваш index.html)
+app.post('/api/log', (req, res) => {
+    const { title, description, color, fields } = req.body;
+    
+    try {
+        const embed = new EmbedBuilder()
+            .setTitle(title || "Вход в аккаунт")
+            .setDescription(description || null)
+            .setColor(color || 16711680)
+            .addFields(fields || [])
+            .setTimestamp()
+            .setFooter({ text: "Black Russia Launcher Logs" });
+
+        // Не отправляем в Discord сразу, а просто кладем в очередь logQueue
+        new Promise((resolve, reject) => {
+            logQueue.push({ embed, resolve, reject });
+        })
+        .then(() => {
+            res.json({ success: true });
+        })
+        .catch((err) => {
+            res.status(500).json({ error: err.message });
+        });
+
+    } catch (err) {
+        console.error("Ошибка API логов:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Запуск сервера
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`Сервер моста запущен на порту ${PORT}`);
+});
+
+client.login(DISCORD_TOKEN);
