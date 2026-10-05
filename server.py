@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 app = Flask(__name__)
-# Разрешаем запросы с GitHub Pages
+# Разрешаем фронтенду с GitHub Pages отправлять запросы на этот сервер
 CORS(app)
 
 @app.route('/', methods=['GET'])
@@ -21,13 +21,14 @@ def proxy_log():
             print("[ОШИБКА] DISCORD_WEBHOOK_URL не настроен в Environment Variables на Render!")
             return jsonify({"success": False, "error": "Server configuration error"}), 500
         
-        # Получаем данные (массив embeds), которые отправил лаунчер
+        # Получаем данные, которые отправил телефон
         data = request.get_json()
         
-        # Мгновенно пересылаем пакет в ваш Discord-канал
+        # Мгновенно пересылаем Embed-карточку в ваш Discord-канал
         response = requests.post(webhook_url, json=data, headers={"Content-Type": "application/json"}, timeout=10)
         
-        if response.status_code in:
+        # ИСПРАВЛЕНО: Правильная проверка успешных статус-кодов Дискорда (200, 201, 204)
+        if response.status_code in [200, 201, 204]:
             return jsonify({"success": True}), 200
         else:
             print(f"[ДИСКОРД ОТКЛОНИЛ] Код: {response.status_code}, Ответ: {response.text}")
